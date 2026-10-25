@@ -265,13 +265,30 @@ app.get('/api/proxy-image', async (req, res) => {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
       Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
     };
-    if (referer) {
-      headers['Referer'] = referer;
-    } else {
-      try {
-        const u = new URL(targetUrl);
-        headers['Referer'] = `${u.protocol}//${u.host}/`;
-      } catch {}
+    let activeReferer = referer;
+    const lowerTarget = targetUrl.toLowerCase();
+    if (!activeReferer) {
+      if (lowerTarget.includes('cmzcdn.org') || lowerTarget.includes('comizy')) {
+        activeReferer = 'https://comizy.io/';
+      } else if (lowerTarget.includes('wowpic') || lowerTarget.includes('comix.to')) {
+        activeReferer = 'https://comix.to/';
+      } else if (lowerTarget.includes('asurascans') || lowerTarget.includes('asura-images')) {
+        activeReferer = 'https://asurascans.com/';
+      } else if (lowerTarget.includes('mangafire')) {
+        activeReferer = 'https://mangafire.to/';
+      } else if (lowerTarget.includes('mangakatana')) {
+        activeReferer = 'https://mangakatana.com/';
+      } else if (lowerTarget.includes('weebcentral')) {
+        activeReferer = 'https://weebcentral.com/';
+      } else {
+        try {
+          const u = new URL(targetUrl);
+          activeReferer = `${u.protocol}//${u.host}/`;
+        } catch {}
+      }
+    }
+    if (activeReferer) {
+      headers['Referer'] = activeReferer;
     }
 
     const upstream = await fetch(targetUrl, {

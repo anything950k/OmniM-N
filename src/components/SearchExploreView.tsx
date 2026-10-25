@@ -574,7 +574,7 @@ export const SearchExploreView: React.FC<SearchExploreViewProps> = ({
       {activeChapter && selectedItem && (
         <ReaderModal
           slug={selectedSlug}
-          sourceBaseUrl=""
+          sourceBaseUrl={currentSource?.baseURL || ''}
           itemTitle={selectedItem.title}
           chapter={activeChapter}
           allChapters={chapters}

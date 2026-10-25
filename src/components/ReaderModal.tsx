@@ -95,9 +95,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       if (viewMode === 'single' && contentData?.type === 'images') {
-        const pages = extractPageUrls();
+        const pList = extractPages();
         if (e.key === 'ArrowRight' || e.key === ' ') {
-          setCurrentPage((prev) => Math.min(pages.length, prev + 1));
+          setCurrentPage((prev) => Math.min(pList.length, prev + 1));
         } else if (e.key === 'ArrowLeft') {
           setCurrentPage((prev) => Math.max(1, prev - 1));
         }
@@ -107,25 +107,36 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [viewMode, contentData, onClose]);
 
-  const extractPageUrls = (): string[] => {
+  interface PageItem {
+    url: string;
+    referer?: string;
+  }
+
+  const extractPages = (): PageItem[] => {
     if (!contentData) return [];
     if (contentData.type === 'images') {
       const rawPages = contentData.pages || [];
-      return (Array.isArray(rawPages) ? rawPages : []).map((p: any) => {
-        if (typeof p === 'string') return p;
-        if (p && p.url) return p.url;
-        return '';
-      }).filter(Boolean);
+      return (Array.isArray(rawPages) ? rawPages : [])
+        .map((p: any) => {
+          if (typeof p === 'string') return { url: p };
+          if (p && p.url) {
+            const ref = p.headers?.Referer || p.headers?.referer || '';
+            return { url: p.url, referer: ref };
+          }
+          return null;
+        })
+        .filter((item): item is PageItem => Boolean(item && item.url));
     }
     return [];
   };
 
-  const getProxyImageUrl = (url: string) => {
-    if (!url) return '';
-    return `/api/proxy-image?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(sourceBaseUrl)}`;
-  };
+  const pages = extractPages();
 
-  const pages = extractPageUrls();
+  const getProxyImageUrl = (page: PageItem | undefined) => {
+    if (!page || !page.url) return '';
+    const ref = page.referer || sourceBaseUrl || '';
+    return `/api/proxy-image?url=${encodeURIComponent(page.url)}&referer=${encodeURIComponent(ref)}`;
+  };
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -318,10 +329,10 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
                 className="flex flex-col items-center space-y-2 transition-all duration-150"
                 style={{ width: `${Math.min(100, zoom)}%`, maxWidth: zoom > 100 ? `${zoom * 9}px` : '850px' }}
               >
-                {pages.map((imgUrl, idx) => (
+                {pages.map((page, idx) => (
                   <div key={idx} className="relative w-full shadow-lg rounded-sm overflow-hidden bg-slate-900 group">
                     <img
-                      src={getProxyImageUrl(imgUrl)}
+                      src={getProxyImageUrl(page)}
                       alt={`Page ${idx + 1}`}
                       className="w-full h-auto block select-none"
                       loading="lazy"
@@ -329,7 +340,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
                         // Fallback to direct URL if proxy failed
                         const target = e.currentTarget;
                         if (target.src.includes('/api/proxy-image')) {
-                          target.src = imgUrl;
+                          target.src = page.url;
                         }
                       }}
                     />
@@ -352,8 +363,8 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
                     className="w-full max-h-[82vh] object-contain mx-auto select-none"
                     onError={(e) => {
                       const target = e.currentTarget;
-                      if (target.src.includes('/api/proxy-image')) {
-                        target.src = pages[currentPage - 1];
+                      if (target.src.includes('/api/proxy-image') && pages[currentPage - 1]) {
+                        target.src = pages[currentPage - 1].url;
                       }
                     }}
                   />

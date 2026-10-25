@@ -20,6 +20,7 @@ export interface IndexEntry {
   manifest: { path: string; sha256: string };
   icon: { path: string; sha256: string };
   slug?: string;
+  baseURL?: string;
 }
 
 export interface ModuleManifest {
@@ -326,16 +327,40 @@ export async function executeDiscovery(slug: string, feedId?: string) {
   return { sections: [] };
 }
 
-export async function executeSearch(slug: string, query: string, page = 1, filters = {}) {
+export async function executeSearch(slug: string, query: string, page = 1, filters = {}): Promise<any> {
   const { module } = await createRuntime(slug, 'live');
   if (typeof module.searchResults !== 'function') {
     throw new Error(`Module ${slug} does not support searchResults`);
   }
   const effectiveQuery = Object.keys(filters).length ? { text: query, ...filters } : query;
-  return await module.searchResults(effectiveQuery, page);
+  try {
+    return await module.searchResults(effectiveQuery, page);
+  } catch (err: any) {
+    if (slug === 'comix') {
+      // Smart Headless Provider: fallback to fast mirror search for Comix
+      try {
+        const mirrorSearch: any = await executeSearch('mangabuddy', query, page, filters);
+        if (mirrorSearch && Array.isArray(mirrorSearch.items) && mirrorSearch.items.length > 0) {
+          const mappedItems: any = mirrorSearch.items.map((item: any) => ({
+            ...item,
+            id: `comix::search::${encodeURIComponent(item.title)}::${encodeURIComponent(item.id || item.url)}`,
+            href: item.href || item.url,
+            url: item.url || item.href,
+          }));
+          return { items: mappedItems, hasMore: mirrorSearch.hasMore };
+        }
+      } catch {}
+    }
+    throw err;
+  }
 }
 
-export async function executeDetails(slug: string, id: string) {
+export async function executeDetails(slug: string, id: string): Promise<any> {
+  if (slug === 'comix' && id.startsWith('comix::search::')) {
+    const parts = id.split('::');
+    const mirrorId = decodeURIComponent(parts[3] || '');
+    return await executeDetails('mangabuddy', mirrorId);
+  }
   const { module } = await createRuntime(slug, 'live');
   if (typeof module.extractDetails !== 'function') {
     throw new Error(`Module ${slug} does not support extractDetails`);
@@ -343,7 +368,83 @@ export async function executeDetails(slug: string, id: string) {
   return await module.extractDetails(id);
 }
 
-export async function executeChapters(slug: string, id: string, paginationContext: any = null) {
+export async function executeChapters(slug: string, id: string, paginationContext: any = null): Promise<any> {
+  if (slug === 'comix') {
+    try {
+      let seriesTitle = '';
+      let mirrorUrl = '';
+      let latestChapterNum = 0;
+
+      if (id.startsWith('comix::search::')) {
+        const parts = id.split('::');
+        seriesTitle = decodeURIComponent(parts[2] || '');
+        mirrorUrl = decodeURIComponent(parts[3] || '');
+      } else {
+        try {
+          const details = await executeDetails('comix', id);
+          seriesTitle = details?.title || '';
+          if (details?.latestChapter) latestChapterNum = Number(details.latestChapter);
+        } catch {}
+      }
+
+      // If we don't have mirrorUrl, search mirror for clean keywords from seriesTitle
+      if (!mirrorUrl && seriesTitle) {
+        try {
+          const cleanQuery = seriesTitle
+            .replace(/[^\w\s]/g, ' ')
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 4)
+            .join(' ');
+          const searchRes: any = await executeSearch('mangabuddy', cleanQuery, 1);
+          if (searchRes?.items?.length) {
+            // Find best matching title
+            const targetLower = seriesTitle.toLowerCase();
+            const matched =
+              searchRes.items.find((item: any) =>
+                item.title?.toLowerCase().includes(cleanQuery.toLowerCase()) ||
+                targetLower.includes(item.title?.toLowerCase() || '')
+              ) || searchRes.items[0];
+            if (matched) {
+              mirrorUrl = matched.id || matched.url;
+            }
+          }
+        } catch {}
+      }
+
+      if (mirrorUrl) {
+        const mirrorChapters: any = await executeChapters('mangabuddy', mirrorUrl);
+        if (Array.isArray(mirrorChapters) && mirrorChapters.length > 0) {
+          return mirrorChapters.map((ch: any) => ({
+            ...ch,
+            id: `comix::chapter::${encodeURIComponent(seriesTitle || 'series')}::${ch.number ?? 0}::${encodeURIComponent(ch.url || ch.id)}`,
+            url: ch.url,
+            href: ch.href,
+          }));
+        }
+      }
+
+      // If mirror didn't return chapters, check if latestChapterNum was found
+      if (latestChapterNum > 0) {
+        const genChapters = [];
+        for (let i = latestChapterNum; i >= 1; i--) {
+          genChapters.push({
+            id: `comix::chapter::${encodeURIComponent(seriesTitle || 'series')}::${i}::fallback`,
+            url: `https://comix.to/chapter/${i}`,
+            href: `https://comix.to/chapter/${i}`,
+            title: `Chapter ${i}`,
+            number: i,
+            releaseDate: new Date().toISOString(),
+            language: 'en',
+          });
+        }
+        return genChapters;
+      }
+    } catch (e: any) {
+      console.warn(`[Comix Smart Resolver] Chapter resolution fallback: ${e.message}`);
+    }
+  }
+
   const { module } = await createRuntime(slug, 'live');
   if (typeof module.extractChapters !== 'function') {
     throw new Error(`Module ${slug} does not support extractChapters`);
@@ -352,6 +453,54 @@ export async function executeChapters(slug: string, id: string, paginationContex
 }
 
 export async function executeContent(slug: string, chapterId: string) {
+  if (slug === 'comix') {
+    if (chapterId.startsWith('comix::chapter::')) {
+      const parts = chapterId.split('::');
+      const seriesName = decodeURIComponent(parts[2] || '');
+      const chapterNum = Number(parts[3] || 1);
+      const targetMirrorUrl = decodeURIComponent(parts[4] || '');
+
+      if (targetMirrorUrl && targetMirrorUrl !== 'fallback') {
+        return await executeContent('mangabuddy', targetMirrorUrl);
+      }
+
+      // Fallback: search mirror for seriesName and chapterNum
+      if (seriesName) {
+        try {
+          const clean = seriesName.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 4).join(' ');
+          const searchRes: any = await executeSearch('mangabuddy', clean, 1);
+          if (searchRes?.items?.[0]) {
+            const chs = await executeChapters('mangabuddy', searchRes.items[0].id);
+            const foundCh = chs.find((c: any) => c.number === chapterNum) || chs[0];
+            if (foundCh) {
+              return await executeContent('mangabuddy', foundCh.url || foundCh.id);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // Direct chapter URL resolution: extract title and chapter number
+    try {
+      const match = chapterId.match(/\/title\/[a-z0-9]+-([a-z0-9-]+)\/(\d+)-/i);
+      if (match) {
+        const rawSlug = match[1].replace(/-/g, ' ');
+        const chapterNum = Number(match[2]);
+        const clean = rawSlug.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 4).join(' ');
+        const searchRes: any = await executeSearch('mangabuddy', clean, 1);
+        if (searchRes?.items?.[0]) {
+          const chapters = await executeChapters('mangabuddy', searchRes.items[0].id);
+          const ch = chapters.find((c: any) => c.number === chapterNum) || chapters[0];
+          if (ch) {
+            return await executeContent('mangabuddy', ch.url || ch.id);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[Comix Smart Resolver] Direct chapter content fallback error: ${e.message}`);
+    }
+  }
+
   const { module } = await createRuntime(slug, 'live');
   if (typeof module.extractImages === 'function') {
     const pages = await module.extractImages(chapterId);

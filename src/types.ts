@@ -11,6 +11,7 @@ export interface IndexEntry {
   manifest: { path: string; sha256: string };
   icon: { path: string; sha256: string };
   slug?: string;
+  baseURL?: string;
 }
 
 export interface ModuleManifest {
